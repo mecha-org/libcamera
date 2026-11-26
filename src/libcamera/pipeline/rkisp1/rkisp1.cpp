@@ -119,6 +119,7 @@ public:
 
 	std::unique_ptr<ipa::rkisp1::IPAProxyRkISP1> ipa_;
 
+	ControlList startControls_;
 	ControlInfoMap ipaControls_;
 
 	/*
@@ -1229,7 +1230,7 @@ int PipelineHandlerRkISP1::freeBuffers(Camera *camera)
 	return 0;
 }
 
-int PipelineHandlerRkISP1::start(Camera *camera, [[maybe_unused]] const ControlList *controls)
+int PipelineHandlerRkISP1::start(Camera *camera, const ControlList *controls)
 {
 	RkISP1CameraData *data = cameraData(camera);
 	utils::ScopeExitActions actions;
@@ -1250,6 +1251,9 @@ int PipelineHandlerRkISP1::start(Camera *camera, [[maybe_unused]] const ControlL
 	actions += [&]() { data->ipa_->stop(); };
 
 	data->frame_ = 0;
+	data->startControls_.clear();
+	if (controls)
+		data->startControls_ = *controls;
 
 	if (!isRaw_) {
 		ret = param_->streamOn();
@@ -1346,7 +1350,24 @@ int PipelineHandlerRkISP1::queueRequestDevice(Camera *camera, Request *request)
 	if (!info)
 		return -ENOENT;
 
-	data->ipa_->queueRequest(data->frame_, request->controls());
+	if (!data->startControls_.empty()) {
+		/*
+		 * Apply the controls passed to Camera::start() with the first
+		 * request. Controls explicitly set in the request take
+		 * precedence. The application's request is left unmodified.
+		 */
+		ControlList controls = request->controls();
+		for (const auto &[id, value] : data->startControls_) {
+			if (!controls.contains(id))
+				controls.set(id, value);
+		}
+		data->startControls_.clear();
+
+		data->ipa_->queueRequest(data->frame_, controls);
+	} else {
+		data->ipa_->queueRequest(data->frame_, request->controls());
+	}
+
 	if (isRaw_) {
 		if (info->mainPathBuffer)
 			data->mainPath_->queueBuffer(info->mainPathBuffer);
